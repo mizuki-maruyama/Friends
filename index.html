@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dify chat-messages streaming demo</title>
+  <style>
+    :root {
+      --ai-bubble-bg: #f5f5f5;
+      --user-bubble-bg: #cfe9ff;
+      --border-color: #ddd;
+      /* キャラ背景の濃さ（調整用） */
+      --char-bg-opacity: 1;
+      /* キャラ画像の見せる幅（既存の background-size と揃える） */
+      --char-width: clamp(320px, 65vh, 800px);
+      /* デフォルトはオフセットなし（狭い画面） */
+      --ai-left-offset: 0px;
+    }
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 20px;
+    }
+    label { display: block; margin-top: 8px; }
+    input, textarea, button { font-size: 14px; }
+    /* レイアウト: 1カラムに変更（左カラムは使わない） */
+    #chatLayout {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+      align-items: start;
+      margin-top: 16px;
+    }
+    /* 左カラムは非表示（任意） */
+    #character { display: none; }
+    /* メッセージエリア */
+    .chat {
+      position: relative;     /* 背景擬似要素用 */
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px;
+      height: 90vh;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* モバイルのアドレスバー変動にも強い動的vh（対応ブラウザのみ上書き） */
+    @supports (height: 87dvh) {
+      .chat { height: 87dvh; }
+    }
+    /* 背景キャラ（左寄せ・でかく・うっすら） */
+    .chat::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: var(--char-bg-image, url('josei_20_a.png'));
+      background-repeat: no-repeat;
+      background-position: left 8px top 0; /* left center も可 */
+      background-size: var(--char-width, clamp(320px, 65vh, 800px)) auto;
+      opacity: var(--char-bg-opacity);
+      pointer-events: none;
+      z-index: 0;
+    }
+    #messages {
+      position: relative; /* 背景より前面へ */
+      z-index: 1;
+      height: 100%;
+      overflow-x: hidden;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    /* メッセージ行（ユーザー/AI） */
+    .msg {
+      display: flex;
+      width: 100%;
+    }
+    .msg.ai {
+      justify-content: flex-start; /* 左寄せ */
+    }
+    .msg.user {
+      justify-content: flex-end; /* 右寄せ */
+    }
+    /* フキダシ */
+    .bubble {
+      position: relative;
+      display: inline-block;
+      max-width: min(680px, 85%);
+      padding: 10px 12px;
+      border-radius: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      word-break: break-word;
+      /* 背景画像上でも読みやすいように、やや不透明に */
+      backdrop-filter: saturate(1.1);
+    }
+    .msg.ai .bubble {
+      background: var(--ai-bubble-bg);
+      border: 1px solid #eee;
+      margin-left: 0;
+      /* 既存の max-width はそのままでもOK。より安全にするなら下記に置換 */
+      max-width: min(680px, 85%);
+    }
+    .msg.user .bubble {
+      background: var(--user-bubble-bg);
+      border: 1px solid #b7dbff;
+    }
+    /* フキダシのしっぽ（AIは左、ユーザーは右） */
+    .msg.ai .bubble::after {
+      content: "";
+      position: absolute;
+      left: -8px;
+      top: 12px;
+      width: 0; height: 0;
+      border-style: solid;
+      border-width: 8px 8px 8px 0;
+      border-color: transparent var(--ai-bubble-bg) transparent transparent;
+      filter: drop-shadow(0 0 0 #eee);
+    }
+    .msg.user .bubble::after {
+      content: "";
+      position: absolute;
+      right: -8px;
+      top: 12px;
+      width: 0; height: 0;
+      border-style: solid;
+      border-width: 8px 0 8px 8px;
+      border-color: transparent transparent transparent var(--user-bubble-bg);
+      filter: drop-shadow(0 0 0 #b7dbff);
+    }
+    /* 操作エリア */
+    .row { margin: 8px 0; }
+    input[readonly] { background: #fafafa; }
+    /* テキストエリアと送信ボタンを横並びに */
+    /* テキストエリアと送信ボタンを横並びに */
+    .inputWithBtn {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start; /* ボタンを上揃え */
+    }
+    /* テキストエリアは横幅を広く使う */
+    .inputWithBtn textarea {
+      flex: 1 1 auto;
+    }
+    /* ボタンの見栄え微調整（任意） */
+    #startBtn {
+      white-space: nowrap;
+      height: 36px;          /* テキストエリアの行高に合わせるなら調整 */
+    }
+    #stopBtn {
+      white-space: nowrap;
+      height: 36px;          /* テキストエリアの行高に合わせるなら調整 */
+    }
+    /* 画面に余裕があるときだけオフセットを有効にする */
+    @media (min-width: 1024px) {
+      :root {
+        /* キャラの幅＋ちょい余白ぶん右へ寄せる */
+        --ai-left-offset: calc(var(--char-width) + 24px);
+      }
+      .msg.ai .bubble {
+        margin-left: var(--ai-left-offset);
+        /* 右にはみ出さないように、最大幅を残りスペースに合わせて制約 */
+        max-width: min(680px, calc(100% - var(--ai-left-offset) - 24px));
+      }
+    }
+
+    /* さらに広い場合は余白をもう少し増やすなど微調整も可（任意） */
+    @media (min-width: 1440px) {
+      :root { --ai-left-offset: calc(var(--char-width) + 32px); }
+    }
+    .charSwitch {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .charBtn {
+      padding: 6px 12px;
+      border: 1px solid var(--border-color);
+      background: #fff;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .charBtn.active {
+      background: #eaf3ff;
+      border-color: #b7dbff;
+      color: #0b5bd3;
+    }
+    .charBtn:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <div id="chatLayout">
+    <!-- 左カラムは非表示にしているが、削除してもOK -->
+    <div id="character">
+      <img id="image" src="josei_20_a.png" alt="AIキャラクター">
+    </div>
+    <div class="chat">
+      <div id="messages"></div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="inputWithBtn">
+      <textarea id="query" rows="3" cols="60" placeholder="メッセージを入力してください"></textarea>
+      <button id="startBtn">メッセージを送信</button>
+      <button id="stopBtn" disabled>停止</button>
+      <div class="charSwitch" role="tablist" aria-label="キャラ切替">
+        <button class="charBtn active" data-profile="char1">Minori</button>
+        <button class="charBtn" data-profile="char2">Nagisa</button>
+        <button class="charBtn" data-profile="char3">Julian</button>
+      </div>
+    </div>
+  </div>
+  <!-- 必ず body の末尾で読み込む -->
+  <script src="./app.js"></script>
+</body>
+</html>
